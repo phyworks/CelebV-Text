@@ -1,5 +1,5 @@
 """
-Improved Downloader with ytb_id grouping, rclone integration, and progress tracking
+Improved Downloader with ytb_id grouping, rclone integration, progress tracking, and multi-threading
 """
 
 import os
@@ -8,6 +8,17 @@ import cv2
 from collections import defaultdict
 import subprocess
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+
+# Configuration constants
+DEFAULT_MAX_WORKERS = 4  # Default number of concurrent YouTube videos to process
+DEFAULT_JSON_PATH = 'celebvtext_info.json'
+DEFAULT_RAW_VID_ROOT = './downloaded_celebvtext/raw/'
+DEFAULT_PROCESSED_VID_ROOT = './downloaded_celebvtext/processed/'
+DEFAULT_PROGRESS_FILE = 'progress.txt'
+DEFAULT_DROPBOX_PATH = "dropbox:celebv-text-raw/"
 
 
 def download(video_path, ytb_id, proxy=None):
@@ -160,6 +171,41 @@ def load_and_group_data(file_path):
     return grouped_data
 
 
+class ThreadSafeProgress:
+    """Thread-safe progress tracking"""
+    
+    def __init__(self, progress_file):
+        self.progress_file = progress_file
+        self.lock = threading.Lock()
+        self.completed_ytb_ids = self.load_progress()
+    
+    def load_progress(self):
+        """Load completed ytb_ids from progress file"""
+        if not os.path.exists(self.progress_file):
+            return set()
+        
+        with open(self.progress_file, 'r') as f:
+            return set(line.strip() for line in f if line.strip())
+    
+    def is_completed(self, ytb_id):
+        """Check if ytb_id is already completed"""
+        with self.lock:
+            return ytb_id in self.completed_ytb_ids
+    
+    def mark_completed(self, ytb_id):
+        """Mark ytb_id as completed and save to file"""
+        with self.lock:
+            if ytb_id not in self.completed_ytb_ids:
+                self.completed_ytb_ids.add(ytb_id)
+                with open(self.progress_file, 'a') as f:
+                    f.write(f"{ytb_id}\n")
+    
+    def get_completed_count(self):
+        """Get number of completed ytb_ids"""
+        with self.lock:
+            return len(self.completed_ytb_ids)
+
+
 def load_progress(progress_file):
     """Load completed ytb_ids from progress file"""
     if not os.path.exists(progress_file):
@@ -189,8 +235,11 @@ def run_command(cmd, description=""):
         return False, e.stderr
 
 
-def move_to_dropbox(file_path, dropbox_path="dropbox:celebv-text-raw/"):
+def move_to_dropbox(file_path, dropbox_path=None):
     """Move processed video to Dropbox using rclone"""
+    if dropbox_path is None:
+        dropbox_path = os.getenv('CELEBV_DROPBOX_PATH', DEFAULT_DROPBOX_PATH)
+    
     filename = os.path.basename(file_path)
     dropbox_full_path = f"{dropbox_path}{filename}"
     
@@ -216,7 +265,7 @@ def cleanup_files(*file_paths):
                 logging.error(f"Failed to cleanup {file_path}: {e}")
 
 
-def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, proxy=None):
+def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, progress_tracker, proxy=None):
     """
     Process all videos for a single YouTube ID
     
@@ -225,16 +274,20 @@ def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, pr
         video_data_list: List of video processing data for this ytb_id
         raw_vid_root: Directory for raw videos
         processed_vid_root: Directory for processed videos
+        progress_tracker: ThreadSafeProgress instance
         proxy: Proxy URL if needed
     
     Returns:
         bool: True if all videos processed successfully
     """
+    thread_id = threading.current_thread().name
+    logging.info(f"[{thread_id}] Starting processing: {ytb_id}")
+    
     raw_vid_path = os.path.join(raw_vid_root, f"{ytb_id}.mp4")
     
     # Download raw video
     if not download(raw_vid_path, ytb_id, proxy):
-        logging.error(f"Failed to download {ytb_id}, skipping all related videos")
+        logging.error(f"[{thread_id}] Failed to download {ytb_id}, skipping all related videos")
         return False
     
     processed_files = []
@@ -246,16 +299,19 @@ def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, pr
         time = video_data['time']
         bbox = video_data['bbox']
         
-        logging.info(f"Processing {save_name} from {ytb_id}")
+        logging.info(f"[{thread_id}] Processing {save_name} from {ytb_id}")
         
         processed_path = process_ffmpeg(raw_vid_path, processed_vid_root, save_name, bbox, time)
         
         if processed_path:
             processed_files.append(processed_path)
         else:
-            logging.error(f"Failed to process {save_name}")
+            logging.error(f"[{thread_id}] Failed to process {save_name}")
             all_success = False
     
+    # Move raw file to Dropbox
+    move_to_dropbox(raw_vid_path, "dropbox:celebv-text-processed/")
+
     # Move processed files to Dropbox
     moved_files = []
     for processed_path in processed_files:
@@ -267,16 +323,31 @@ def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, pr
     # Cleanup files (both raw and successfully moved processed files)
     cleanup_files(raw_vid_path, *moved_files)
     
+    if all_success:
+        progress_tracker.mark_completed(ytb_id)
+        logging.info(f"[{thread_id}] Successfully completed: {ytb_id}")
+    else:
+        logging.error(f"[{thread_id}] Some errors occurred while processing: {ytb_id}")
+    
     return all_success
 
 
 if __name__ == '__main__':
-    # Configuration
-    json_path = 'celebvtext_info.json'  # JSON file path
-    raw_vid_root = './downloaded_celebvtext/raw/'  # Download raw video path
-    processed_vid_root = './downloaded_celebvtext/processed/'  # Processed video path
-    progress_file = 'progress.txt'  # Progress tracking file
-    proxy = None  # Proxy URL example, set to None if not used
+    # Configuration - can be overridden by environment variables
+    json_path = os.getenv('CELEBV_JSON_PATH', DEFAULT_JSON_PATH)
+    raw_vid_root = os.getenv('CELEBV_RAW_ROOT', DEFAULT_RAW_VID_ROOT)
+    processed_vid_root = os.getenv('CELEBV_PROCESSED_ROOT', DEFAULT_PROCESSED_VID_ROOT)
+    progress_file = os.getenv('CELEBV_PROGRESS_FILE', DEFAULT_PROGRESS_FILE)
+    proxy = os.getenv('CELEBV_PROXY', None)  # Proxy URL, set environment variable if needed
+    max_workers = int(os.getenv('CELEBV_MAX_WORKERS', DEFAULT_MAX_WORKERS))  # Number of concurrent YouTube videos
+    
+    logging.info(f"Configuration:")
+    logging.info(f"  JSON path: {json_path}")
+    logging.info(f"  Raw video root: {raw_vid_root}")
+    logging.info(f"  Processed video root: {processed_vid_root}")
+    logging.info(f"  Progress file: {progress_file}")
+    logging.info(f"  Max workers: {max_workers}")
+    logging.info(f"  Proxy: {proxy if proxy else 'None'}")
     
     # Setup logging
     logging.basicConfig(
@@ -298,37 +369,74 @@ if __name__ == '__main__':
         grouped_data = load_and_group_data(json_path)
         logging.info(f"Loaded data for {len(grouped_data)} YouTube videos")
         
-        # Load progress to skip already completed videos
-        completed_ytb_ids = load_progress(progress_file)
-        logging.info(f"Found {len(completed_ytb_ids)} already completed videos")
+        # Initialize thread-safe progress tracker
+        progress_tracker = ThreadSafeProgress(progress_file)
+        initial_completed = progress_tracker.get_completed_count()
+        logging.info(f"Found {initial_completed} already completed videos")
         
-        # Process each ytb_id
-        total_ytb_ids = len(grouped_data)
-        processed_count = 0
+        # Filter out already completed videos
+        pending_ytb_ids = [(ytb_id, video_data_list) for ytb_id, video_data_list in grouped_data.items() 
+                          if not progress_tracker.is_completed(ytb_id)]
         
-        for ytb_id, video_data_list in grouped_data.items():
-            if ytb_id in completed_ytb_ids:
-                logging.info(f"Skipping already completed: {ytb_id}")
-                continue
+        total_pending = len(pending_ytb_ids)
+        logging.info(f"Processing {total_pending} pending YouTube videos with {max_workers} threads")
+        
+        if total_pending == 0:
+            logging.info("All videos already completed!")
+        else:
+            # Process videos using ThreadPoolExecutor
+            start_time = time.time()
+            successful_count = 0
+            failed_count = 0
             
-            processed_count += 1
-            logging.info(f"Processing ytb_id {processed_count}/{total_ytb_ids}: {ytb_id} ({len(video_data_list)} videos)")
-            
-            try:
-                success = process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, proxy)
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="YTWorker") as executor:
+                # Submit all tasks
+                future_to_ytb_id = {
+                    executor.submit(
+                        process_ytb_id, 
+                        ytb_id, 
+                        video_data_list, 
+                        raw_vid_root, 
+                        processed_vid_root, 
+                        progress_tracker,
+                        proxy
+                    ): ytb_id 
+                    for ytb_id, video_data_list in pending_ytb_ids
+                }
                 
-                if success:
-                    # Save progress
-                    save_progress(progress_file, ytb_id)
-                    logging.info(f"Successfully completed: {ytb_id}")
-                else:
-                    logging.error(f"Some errors occurred while processing: {ytb_id}")
+                # Process completed tasks
+                for future in as_completed(future_to_ytb_id):
+                    ytb_id = future_to_ytb_id[future]
                     
-            except Exception as e:
-                logging.error(f"Unexpected error processing {ytb_id}: {e}")
-                continue
-        
-        logging.info("Processing completed!")
+                    try:
+                        success = future.result()
+                        if success:
+                            successful_count += 1
+                        else:
+                            failed_count += 1
+                            
+                        completed_count = successful_count + failed_count
+                        progress_percentage = (completed_count / total_pending) * 100
+                        
+                        logging.info(f"Progress: {completed_count}/{total_pending} ({progress_percentage:.1f}%) - "
+                                   f"Success: {successful_count}, Failed: {failed_count}")
+                        
+                    except Exception as e:
+                        failed_count += 1
+                        logging.error(f"Unexpected error processing {ytb_id}: {e}")
+            
+            # Final statistics
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            logging.info("="*50)
+            logging.info("PROCESSING COMPLETED!")
+            logging.info(f"Total processed: {successful_count + failed_count}")
+            logging.info(f"Successful: {successful_count}")
+            logging.info(f"Failed: {failed_count}")
+            logging.info(f"Total time: {elapsed_time:.2f} seconds")
+            logging.info(f"Average time per video: {elapsed_time / (successful_count + failed_count):.2f} seconds")
+            logging.info("="*50)
         
     except Exception as e:
         logging.error(f"Fatal error: {e}")
