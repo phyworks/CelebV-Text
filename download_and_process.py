@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 # Configuration constants
-DEFAULT_MAX_WORKERS = 4  # Default number of concurrent YouTube videos to process
+DEFAULT_MAX_WORKERS = 5  # Default number of concurrent YouTube videos to process
 DEFAULT_JSON_PATH = 'celebvtext_info.json'
 DEFAULT_RAW_VID_ROOT = './downloaded_celebvtext/raw/'
 DEFAULT_PROCESSED_VID_ROOT = './downloaded_celebvtext/processed/'
@@ -241,9 +241,8 @@ def move_to_dropbox(file_path, dropbox_path=None):
         dropbox_path = os.getenv('CELEBV_DROPBOX_PATH', DEFAULT_DROPBOX_PATH)
     
     filename = os.path.basename(file_path)
-    dropbox_full_path = f"{dropbox_path}{filename}"
     
-    cmd = f"rclone move '{file_path}' '{dropbox_full_path}'"
+    cmd = f"rclone move '{file_path}' '{dropbox_path}'"
     success, output = run_command(cmd, f"Moving {filename} to Dropbox")
     
     if success:
@@ -310,6 +309,7 @@ def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, pr
             all_success = False
     
     # Move raw file to Dropbox
+    logging.info(f" Moving raw video {ytb_id} to Dropbox")
     move_to_dropbox(raw_vid_path, "dropbox:celebv-text-processed/")
 
     # Move processed files to Dropbox
@@ -333,6 +333,16 @@ def process_ytb_id(ytb_id, video_data_list, raw_vid_root, processed_vid_root, pr
 
 
 if __name__ == '__main__':
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - [%(threadName)s] - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('download_process.log'),
+            logging.StreamHandler()
+        ]
+    )
+
     # Configuration - can be overridden by environment variables
     json_path = os.getenv('CELEBV_JSON_PATH', DEFAULT_JSON_PATH)
     raw_vid_root = os.getenv('CELEBV_RAW_ROOT', DEFAULT_RAW_VID_ROOT)
@@ -349,15 +359,6 @@ if __name__ == '__main__':
     logging.info(f"  Max workers: {max_workers}")
     logging.info(f"  Proxy: {proxy if proxy else 'None'}")
     
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('download_process.log'),
-            logging.StreamHandler()
-        ]
-    )
     
     # Create directories
     os.makedirs(raw_vid_root, exist_ok=True)
