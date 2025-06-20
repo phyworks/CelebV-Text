@@ -6,9 +6,18 @@
 4. After finished, append the youtube video id to a progress file, and remove the raw video and processed video file 
 5. Support multi-threading
 
+
 # Script Configuration
 
 The `download_and_process.py` script now supports multi-threading to process multiple YouTube videos concurrently, significantly improving performance.
+
+## Cookie or PO Token
+
+Reference: 
+
+- https://github.com/yt-dlp/yt-dlp/wiki/Extractors
+- https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+
 
 ## Configuration Options
 
@@ -86,3 +95,35 @@ Each thread logs with a unique identifier (e.g., `[YTWorker-1]`) making it easy 
 - Progress is saved immediately upon successful completion
 - Failed videos can be retried by running the script again
 - Comprehensive error logging with thread information
+
+# Server Setup
+
+Preprae
+
+## Install tools and configuration
+
+__Install apt packages__
+
+```
+apt install -y rclone ffmpeg iftop python3-pip git unzip screen
+```
+
+__Install yt-dlp__
+
+```
+curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+chmod a+rx  /usr/local/bin/yt-dlp
+```
+
+__Configuration__
+```
+vi ~/.config/rclone/rclone.conf
+vi ~/.screenrc
+```
+
+## create a virtual environment and install the dependency
+
+```
+python3 -m venv path/to/venv
+./bin/pip3 install -r requirements.txt
+```

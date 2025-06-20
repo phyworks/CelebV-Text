@@ -115,6 +115,7 @@ def process_ffmpeg(raw_vid_path, save_folder, save_vid_name, bbox, time):
     out_path = os.path.join(save_folder, save_vid_name)
     
     try:
+        logging.info(f"Processing video: {save_vid_name} with bbox {bbox} and time {time}")
         cap = cv2.VideoCapture(raw_vid_path)
         if not cap.isOpened():
             logging.error(f"Cannot open video: {raw_vid_path}")
@@ -128,7 +129,7 @@ def process_ffmpeg(raw_vid_path, save_folder, save_vid_name, bbox, time):
         start_sec, end_sec = time
 
         cmd = f"ffmpeg -i '{raw_vid_path}' -vf crop=w={right - left}:h={bottom - top}:x={left}:y={top} -ss {secs_to_timestr(start_sec)} -to {secs_to_timestr(end_sec)} -loglevel error -y '{out_path}'"
-        
+        logging.info(f"FFmpeg command: {cmd}")
         success, output = run_command(cmd, f"Processing video {save_vid_name}")
         
         if success and os.path.exists(out_path):
