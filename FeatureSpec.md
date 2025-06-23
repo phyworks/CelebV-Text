@@ -11,7 +11,10 @@
 
 The `download_and_process.py` script now supports multi-threading to process multiple YouTube videos concurrently, significantly improving performance.
 
-## Cookie or PO Token
+## Cookie and PO Token
+
+1. Access youtube to get the cookie
+2. Install PO Token extractor as yt-dlp plugin to enable extracting PO token for downloading vidoes
 
 Reference: 
 
